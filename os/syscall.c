@@ -6,6 +6,8 @@
 #include "timer.h"
 #include "trap.h"
 
+#define BIG_STRIDE 65536
+
 uint64 sys_write(int fd, uint64 va, uint len)
 {
 	debugf("sys_write fd = %d str = %x, len = %d", fd, va, len);
@@ -95,14 +97,137 @@ uint64 sys_wait(int pid, uint64 va)
 uint64 sys_spawn(uint64 va)
 {
 	// TODO: your job is to complete the sys call
-	return -1;
+    if (va ==0)
+	    return -1;
+
+    struct proc *p = curr_proc();
+    char name[200];
+    copyinstr(p->pagetable, name, va, 200);
+
+    int id = get_id_by_name(name);
+    if (id < 0)
+        return -1;
+
+    struct proc *child = allocproc();
+    if (child == NULL)
+        return -1;
+
+    child->parent = p;
+
+    loader(id, child);
+
+    return child->pid;
 }
 
 uint64 sys_set_priority(long long prio){
     // TODO: your job is to complete the sys call
-    return -1;
+    if (prio < 2)
+        return -1;
+
+    struct proc *p = curr_proc();
+    p->priority = prio;
+    p->pass = BIG_STRIDE / prio; 
+    return prio;
 }
 
+
+int sys_mmap(void *start, uint64 len, int port, int flag, int fd)
+{
+    struct proc *p = curr_proc();
+    uint64 addr = (uint64)start;
+   
+    if (addr % PGSIZE != 0) {
+        return -1;
+    }
+
+
+    if (len == 0) {
+        return 0;
+    }
+   
+    // len less that 1 GiB
+    if (len > 1024 * 1024 * 1024) {
+        return -1;
+    }
+   
+    if ((port & ~0x7) != 0) {
+        return -1;
+    }
+   
+    if ((port & 0x7) == 0) {
+        return -1;
+    }
+   
+    uint64 npages = (len + PGSIZE - 1) / PGSIZE;
+   
+    // Check if any page in [addr, addr + len) is already mapped
+    for (uint64 i = 0; i < npages; i++) {
+        uint64 va = addr + i * PGSIZE;
+        if (walkaddr(p->pagetable, va) != 0) {
+            return -1;
+        }
+    }
+   
+    int perm = PTE_U | PTE_V;
+    if (port & 0x1) perm |= PTE_R;
+    if (port & 0x2) perm |= PTE_W;
+    if (port & 0x4) perm |= PTE_X;
+   
+    // Allocate and map pages
+    for (uint64 i = 0; i < npages; i++) {
+        uint64 va = addr + i * PGSIZE;
+       
+        void *pa = kalloc();
+        if (pa == 0) {
+            return -1;
+        }
+       
+        // Clear the pages
+        memset(pa, 0, PGSIZE);
+       
+        // Map the pages
+        if (mappages(p->pagetable, va, PGSIZE, (uint64)pa, perm) != 0) {
+            kfree(pa);
+            return -1;
+        }
+    }
+   
+    return 0;
+}
+
+int sys_munmap(void *start, uint64 len){
+    struct proc *p = curr_proc();
+    uint64 addr = (uint64)start;
+
+
+
+
+    if (addr % PGSIZE != 0){
+        return -1;
+    }
+
+
+    if (len ==0){
+        return 0;
+    }
+
+
+    uint64 npages = (len + PGSIZE -1)/ PGSIZE;
+
+
+    for (uint i = 0; i < npages; i++){
+        uint64 va = addr + i * PGSIZE;
+        if (walkaddr(p->pagetable, va) == 0){
+            return -1;
+        }
+    }
+
+
+    uvmunmap(p->pagetable, addr, npages, 1);
+
+
+    return 0;
+}
 
 extern char trap_page[];
 
@@ -148,6 +273,15 @@ void syscall()
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;
+    case SYS_mmap:
+        ret = sys_mmap((void *)args[0], args[1], args[2], args[3], args[4]);
+        break;
+    case SYS_munmap:
+        ret = sys_munmap((void *)args[0], args[1]);
+        break;
+    case SYS_setpriority:
+        ret = sys_set_priority((long long)args[0]);
+        break;
 	default:
 		ret = -1;
 		errorf("unknown syscall %d", id);

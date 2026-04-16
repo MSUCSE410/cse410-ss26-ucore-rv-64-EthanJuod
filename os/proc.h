@@ -45,6 +45,11 @@ struct proc {
 	struct proc *parent; // Parent process
 	uint64 exit_code;
 	struct file *files[FD_BUFFER_SIZE];
+
+	// Stride scheduling fields
+	long long priority; 
+    uint64 stride;       
+    uint64 pass;
 };
 
 int cpuid();
